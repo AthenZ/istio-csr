@@ -557,6 +557,12 @@
         "rootCAFile": {
           "$ref": "#/$defs/helm-values.app.tls.rootCAFile"
         },
+        "servingCertificateSecretName": {
+          "$ref": "#/$defs/helm-values.app.tls.servingCertificateSecretName"
+        },
+        "servingCertificateSecretNamespace": {
+          "$ref": "#/$defs/helm-values.app.tls.servingCertificateSecretNamespace"
+        },
         "trustDomain": {
           "$ref": "#/$defs/helm-values.app.tls.trustDomain"
         }
@@ -610,6 +616,16 @@
     },
     "helm-values.app.tls.rootCAFile": {
       "description": "An optional file location to a PEM encoded root CA that the root CA. ConfigMap in all namespaces will be populated with. If empty, the CA returned from cert-manager for the serving certificate will be used."
+    },
+    "helm-values.app.tls.servingCertificateSecretName": {
+      "default": "",
+      "description": "Name of a pre-provisioned Secret holding a cert-manager-issued TLS certificate and key for the gRPC serving endpoint.\n\nWhen set, istio-csr loads its serving certificate from this Secret\n(tls.crt, tls.key and ca.crt) instead of requesting a CertificateRequest of\nits own. That is how a SPIFFE URI SAN is supplied: cert-manager certificates can carry one, the built-in CertificateRequest path cannot.\n\nRequires servingCertificateSecretNamespace to be set as well, and grants the istio-csr Role `get` on that one Secret.",
+      "type": "string"
+    },
+    "helm-values.app.tls.servingCertificateSecretNamespace": {
+      "default": "",
+      "description": "Namespace of the Secret named by servingCertificateSecretName.",
+      "type": "string"
     },
     "helm-values.app.tls.trustDomain": {
       "default": "cluster.local",

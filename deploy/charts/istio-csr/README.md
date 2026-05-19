@@ -326,6 +326,28 @@ An optional file location to a PEM encoded root CA that the root CA. ConfigMap i
 > ```
 
 Requested duration of the gRPC serving certificate. Will be automatically renewed. Based on [NIST 800-204A recommendations (SM-DR13)](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-204A.pdf).
+#### **app.tls.servingCertificateSecretName** ~ `string`
+> Default value:
+> ```yaml
+> ""
+> ```
+
+Name of a pre-provisioned Secret holding a cert-manager-issued TLS certificate and key for the gRPC serving endpoint.  
+  
+When set, istio-csr loads its serving certificate from this Secret  
+(tls.crt, tls.key and ca.crt) instead of requesting a CertificateRequest of  
+its own. That is how a SPIFFE URI SAN is supplied: cert-manager certificates can carry one, the built-in CertificateRequest path cannot.  
+  
+Requires servingCertificateSecretNamespace to be set as well, and grants the istio-csr Role `get` on that one Secret.
+
+#### **app.tls.servingCertificateSecretNamespace** ~ `string`
+> Default value:
+> ```yaml
+> ""
+> ```
+
+Namespace of the Secret named by servingCertificateSecretName.
+
 #### **app.tls.istiodCertificateEnable** ~ `boolean,string,null`
 > Default value:
 > ```yaml

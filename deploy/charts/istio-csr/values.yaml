@@ -198,6 +198,23 @@ app:
     # Based on [NIST 800-204A recommendations (SM-DR13)](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-204A.pdf).
     certificateDuration: 1h
 
+    # Name of a pre-provisioned Secret holding a cert-manager-issued TLS
+    # certificate and key for the gRPC serving endpoint.
+    #
+    # When set, istio-csr loads its serving certificate from this Secret
+    # (tls.crt, tls.key and ca.crt) instead of requesting a CertificateRequest of
+    # its own. That is how a SPIFFE URI SAN is supplied: cert-manager
+    # certificates can carry one, the built-in CertificateRequest path cannot.
+    #
+    # Requires servingCertificateSecretNamespace to be set as well, and grants
+    # the istio-csr Role `get` on that one Secret.
+    # +docs:property
+    servingCertificateSecretName: ""
+
+    # Namespace of the Secret named by servingCertificateSecretName.
+    # +docs:property
+    servingCertificateSecretNamespace: ""
+
     # If true, create the istiod certificate using a cert-manager certificate as part
     # of the install. If set to "dynamic", will create the cert dynamically when
     # istio-csr pods start up. If false, no cert is created.

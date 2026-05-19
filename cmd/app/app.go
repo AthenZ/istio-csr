@@ -129,7 +129,7 @@ func NewCommand(ctx context.Context) *cobra.Command {
 			}
 
 			// Create a new TLS provider for the serving certificate and private key.
-			tls, err := tls.NewProvider(opts.Logr, cm, opts.TLS, cm)
+			tls, err := tls.NewProvider(opts.Logr, cm, opts.TLS, cm, cl)
 			if err != nil {
 				return fmt.Errorf("failed to create tls provider: %w", err)
 			}

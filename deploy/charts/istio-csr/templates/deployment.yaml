@@ -98,6 +98,10 @@ spec:
           - "--serving-certificate-dns-names={{ . }}"
         {{- end  }}
           - "--serving-certificate-duration={{.Values.app.tls.certificateDuration}}"
+        {{- if .Values.app.tls.servingCertificateSecretName }}
+          - "--serving-certificate-secret-name={{.Values.app.tls.servingCertificateSecretName}}"
+          - "--serving-certificate-secret-namespace={{.Values.app.tls.servingCertificateSecretNamespace}}"
+        {{- end }}
           - "--trust-domain={{.Values.app.tls.trustDomain}}"
 
           # server
