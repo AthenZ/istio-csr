@@ -1,0 +1,138 @@
+# Watches cert-manager/istio-csr for new releases.
+#
+# This is a fork that carries a small Athenz-specific patch on top of an upstream
+# release. Nothing else tells us when upstream cuts a release: Renovate and
+# Dependabot track dependencies, not the repository we are forked from, and the
+# inherited govulncheck workflow is guarded to the upstream repo so it never runs
+# here.
+#
+# When upstream is ahead of the release our newest v<version>-athenz.<n> tag is
+# based on, this opens a single tracking issue.
+name: upstream-release-watch
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Weekly on Monday. Upstream releases roughly monthly, so daily would be noise.
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # Only meaningful in the Athenz fork. Guarded the same way as govulncheck.yaml
+    # so that further forks do not open issues against themselves.
+    if: github.repository == 'AthenZ/istio-csr'
+
+    env:
+      UPSTREAM_REPO: cert-manager/istio-csr
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ISSUE_LABEL: upstream-sync
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Tags are needed to work out which upstream release we are based on.
+        with: { fetch-depth: 0 }
+
+      - id: versions
+        name: Compare our upstream base against the latest upstream release
+        run: |
+          set -euo pipefail
+
+          upstream_latest="$(gh release view --repo "$UPSTREAM_REPO" --json tagName --jq .tagName)"
+
+          # Our tags are v<upstream-version>-athenz.<n>; the upstream base is the
+          # part before "-athenz". Sorted by version so the newest wins.
+          our_tag="$(git tag -l 'v*-athenz.*' | sort -V | tail -1)"
+          our_base="${our_tag%%-athenz.*}"
+
+          {
+            echo "upstream_latest=${upstream_latest}"
+            echo "our_tag=${our_tag}"
+            echo "our_base=${our_base}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$our_tag" ]; then
+            # No release cut yet. Nothing to compare against, and an issue would be
+            # noise while the fork is still being set up.
+            echo "state=untagged" >> "$GITHUB_OUTPUT"
+          elif [ "$our_base" = "$upstream_latest" ]; then
+            echo "state=current" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=behind" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report
+        run: |
+          echo "upstream latest  : ${{ steps.versions.outputs.upstream_latest }}"
+          echo "our newest tag   : ${{ steps.versions.outputs.our_tag }}"
+          echo "our upstream base: ${{ steps.versions.outputs.our_base }}"
+          echo "state            : ${{ steps.versions.outputs.state }}"
+
+      - name: Open the tracking issue
+        if: steps.versions.outputs.state == 'behind'
+        env:
+          UPSTREAM_LATEST: ${{ steps.versions.outputs.upstream_latest }}
+          OUR_TAG: ${{ steps.versions.outputs.our_tag }}
+          OUR_BASE: ${{ steps.versions.outputs.our_base }}
+        run: |
+          set -euo pipefail
+
+          title="Sync fork to upstream ${UPSTREAM_LATEST}"
+
+          # One issue per upstream version, so a long-running gap does not
+          # accumulate a new issue every week.
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --state open --label "$ISSUE_LABEL" --search "\"${title}\" in:title" \
+            --json number --jq '.[0].number // empty')"
+
+          if [ -n "$existing" ]; then
+            echo "Issue #${existing} already tracks ${UPSTREAM_LATEST}; nothing to do."
+            exit 0
+          fi
+
+          gh label create "$ISSUE_LABEL" --repo "$GITHUB_REPOSITORY" \
+            --description "Fork is behind cert-manager/istio-csr" --color ededed 2>/dev/null || true
+
+          {
+            echo "Upstream \`${UPSTREAM_REPO}\` has released **${UPSTREAM_LATEST}**."
+            echo
+            echo "Our newest tag is \`${OUR_TAG}\`, based on upstream **${OUR_BASE}**."
+            echo
+            echo "To sync, put the Athenz patch on top of the new upstream tag:"
+            echo
+            echo '```sh'
+            echo "git fetch cert-manager --tags"
+            echo "git switch -c sync/${UPSTREAM_LATEST} ${UPSTREAM_LATEST}"
+            echo "git cherry-pick ${OUR_BASE}..${OUR_TAG}   # the Athenz delta"
+            echo "make test-unit"
+            echo '```'
+            echo
+            echo "Open that as a PR rather than force-pushing \`main\`, then tag"
+            echo "\`${UPSTREAM_LATEST}-athenz.1\` to publish the image and chart."
+            echo
+            echo "Things to check while rebasing:"
+            echo
+            echo "- \`pkg/tls/tls.go\` — upstream has been changing this file (TLS minimum"
+            echo "  version, cipher suites, curve preferences). \`loadFromSecret\` builds its"
+            echo "  own \`tls.Config\` and must keep honouring any new serving-TLS options"
+            echo "  rather than hardcoding them."
+            echo "- \`cmd/app/options/options.go\` — new upstream options land next to ours."
+            echo "- The chart's \`values.schema.json\` is generated; re-run"
+            echo "  \`make generate-helm-schema\` and \`make generate-helm-docs\` rather than"
+            echo "  hand-editing."
+            echo
+            echo "Retire this fork instead of syncing if upstream has since made the serving"
+            echo "CSR able to carry a URI SAN, which is the only reason the patch exists."
+            echo
+            echo "_Opened automatically by \`.github/workflows/upstream-release-watch.yaml\`._"
+          } > issue-body.md
+
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "$title" \
+            --label "$ISSUE_LABEL" \
+            --body-file issue-body.md
