@@ -538,37 +538,50 @@ func (p *Provider) loadFromSecret(ctx context.Context) (time.Time, error) {
 			leafCert.NotBefore.Format(time.RFC3339), leafCert.NotAfter.Format(time.RFC3339))
 	}
 
+	// Work out which roots the serving certificate must chain to, WITHOUT
+	// publishing anything yet.
+	//
+	// This is the subtle part. loadCAsRoot swaps p.rootCAs and fans the change
+	// out to subscribers, and the ConfigMap controller is one of those
+	// subscribers -- it rewrites the istio-ca-root-cert ConfigMap in every
+	// namespace in the mesh. So a Secret carrying a new ca.crt together with a
+	// tls.crt that does not chain to it must be rejected BEFORE loadCAsRoot
+	// runs. Verifying afterwards would republish the mesh trust bundle and only
+	// then fail, pointing every workload at a CA that does not match the
+	// certificate istio-csr is still serving.
 	var secretCAPEM []byte
+	var verifyRoots *x509.CertPool
+
 	if len(p.opts.RootCAsCertFile) == 0 {
+		// The mesh roots come from this Secret, so verify against what it carries.
 		secretCAPEM = secret.Data["ca.crt"]
 		if len(secretCAPEM) == 0 {
 			return time.Time{}, fmt.Errorf("Secret %s/%s missing ca.crt",
 				p.opts.ServingCertificateSecretNamespace, p.opts.ServingCertificateSecretName)
 		}
-		// Parse before publishing, so a malformed bundle cannot be handed to
-		// subscribers.
-		if _, err := pki.DecodeX509CertificateSetBytes(secretCAPEM); err != nil {
+		caCerts, err := pki.DecodeX509CertificateSetBytes(secretCAPEM)
+		if err != nil {
 			return time.Time{}, fmt.Errorf("failed to decode ca.crt from Secret %s/%s: %w",
 				p.opts.ServingCertificateSecretNamespace, p.opts.ServingCertificateSecretName, err)
 		}
-	}
-
-	// Everything parsed. Publish the CA, then the serving certificate.
-	if secretCAPEM != nil {
-		if err := p.loadCAsRoot(secretCAPEM); err != nil {
-			return time.Time{}, fmt.Errorf("failed to load CA from Secret: %w", err)
+		verifyRoots = x509.NewCertPool()
+		for _, caCert := range caCerts {
+			verifyRoots.AddCert(caCert)
 		}
+	} else {
+		// The mesh roots come from --root-ca-file, maintained by the watcher in
+		// Start. Nothing here publishes them, so reading is enough.
+		p.lock.RLock()
+		rootCAsPEM, rootCAsPool := p.rootCAs.PEM, p.rootCAs.CertPool
+		p.lock.RUnlock()
+
+		if len(rootCAsPEM) == 0 || rootCAsPool == nil {
+			return time.Time{}, errors.New("root CA certificate is not defined")
+		}
+		verifyRoots = rootCAsPool
 	}
 
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	if len(p.rootCAs.PEM) == 0 || p.rootCAs.CertPool == nil {
-		return time.Time{}, errors.New("root CA certificate is not defined")
-	}
-
-	// Verify the serving certificate chains to the effective mesh roots for
-	// server auth.
+	// Verify the serving certificate chains to those roots for server auth.
 	//
 	// Nothing upstream validates a serving certificate this way, because on the
 	// CertificateRequest path it comes back from the issuer istio-csr just asked
@@ -592,11 +605,26 @@ func (p *Provider) loadFromSecret(ctx context.Context) (time.Time, error) {
 
 	if _, err := servingChain[0].Verify(x509.VerifyOptions{
 		Intermediates: intermediatePool,
-		Roots:         p.rootCAs.CertPool,
+		Roots:         verifyRoots,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		return time.Time{}, fmt.Errorf("failed to verify serving certificate in Secret %s/%s against the current mesh roots: %w",
 			p.opts.ServingCertificateSecretNamespace, p.opts.ServingCertificateSecretName, err)
+	}
+
+	// Everything is validated. Only now publish the CA, then the serving
+	// certificate.
+	if secretCAPEM != nil {
+		if err := p.loadCAsRoot(secretCAPEM); err != nil {
+			return time.Time{}, fmt.Errorf("failed to load CA from Secret: %w", err)
+		}
+	}
+
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	if len(p.rootCAs.PEM) == 0 || p.rootCAs.CertPool == nil {
+		return time.Time{}, errors.New("root CA certificate is not defined")
 	}
 
 	peerCertVerifier := spiffe.NewPeerCertVerifier()

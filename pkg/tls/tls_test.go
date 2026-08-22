@@ -345,3 +345,72 @@ func TestProvider_loadFromSecret_failedRefreshDoesNotPublishCA(t *testing.T) {
 	require.Same(t, servingBefore, p.tlsConfig,
 		"the serving certificate must be left untouched by a failed refresh")
 }
+
+// A Secret can carry a new ca.crt alongside a tls.crt that does not chain to it
+// -- a partially-written or hand-edited Secret, or the wrong CA pasted in. Every
+// cheap check passes: the key pair matches, the leaf parses, it is inside its
+// validity window, and ca.crt decodes. Only the chain verification catches it.
+//
+// That makes the ORDER of the chain verification load-bearing rather than
+// incidental. loadCAsRoot fans the new bundle out to subscribers, and the
+// ConfigMap controller rewrites istio-ca-root-cert in every namespace in the
+// mesh in response. Verifying after publishing would point every workload at a
+// CA that does not match the certificate istio-csr is still serving.
+func TestProvider_loadFromSecret_unchainedCARotationIsNotPublished(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+
+	caPEM, caCert, caPK := genTestCA(t)
+	certPEM, keyPEM, _ := genServingCert(t, caCert, caPK)
+
+	newCAPEM, _, _ := genTestCA(t)
+	require.NotEqual(t, caPEM, newCAPEM)
+
+	good := newSecret(map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM, "ca.crt": caPEM})
+	client := k8sfake.NewSimpleClientset(good)
+
+	p := &Provider{
+		log:       logger,
+		k8sClient: client,
+		opts: Options{
+			TrustDomain:                       testTrustDomain,
+			ServingCertificateSecretName:      testSecretName,
+			ServingCertificateSecretNamespace: testSecretNamespace,
+		},
+	}
+
+	_, err := p.loadFromSecret(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, caPEM, p.rootCAs.PEM)
+	servingBefore := p.tlsConfig
+
+	// Subscribe the way the ConfigMap controller does, so we can assert that a
+	// mesh-wide trust bundle update is never announced.
+	events := p.SubscribeRootCAsEvent()
+
+	// New ca.crt, but the SAME still-valid key pair, which was signed by the old
+	// CA. Everything before the chain verification succeeds.
+	rotated := newSecret(map[string][]byte{
+		"tls.crt": certPEM,
+		"tls.key": keyPEM,
+		"ca.crt":  newCAPEM,
+	})
+	_, err = client.CoreV1().Secrets(testSecretNamespace).Update(
+		context.Background(), rotated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	_, err = p.loadFromSecret(context.Background())
+	require.Error(t, err, "a serving certificate that does not chain to the Secret's ca.crt must fail")
+	require.Contains(t, err.Error(), "against the current mesh roots")
+
+	require.Equal(t, caPEM, p.rootCAs.PEM,
+		"the unchained CA must NOT be published to the mesh trust bundle")
+	require.Same(t, servingBefore, p.tlsConfig,
+		"the serving certificate must be left untouched")
+
+	select {
+	case <-events:
+		t.Fatal("a root CA change was broadcast to subscribers; the ConfigMap controller " +
+			"would have rewritten istio-ca-root-cert in every namespace")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
