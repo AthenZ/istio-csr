@@ -346,7 +346,9 @@ Requires servingCertificateSecretNamespace to be set as well, and grants the ist
 > ""
 > ```
 
-Namespace of the Secret named by servingCertificateSecretName.
+Namespace of the Secret named by servingCertificateSecretName.  
+  
+Required whenever servingCertificateSecretName is set; the chart fails at template time otherwise. This namespace must already exist and already hold the Secret -- the chart creates neither, it only adds a Role and RoleBinding there granting `get` on that one Secret.
 
 #### **app.tls.istiodCertificateEnable** ~ `boolean,string,null`
 > Default value:

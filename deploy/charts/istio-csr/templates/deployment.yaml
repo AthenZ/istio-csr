@@ -1,3 +1,6 @@
+{{- if and .Values.app.tls.servingCertificateSecretName (not .Values.app.tls.servingCertificateSecretNamespace) }}
+{{- fail "app.tls.servingCertificateSecretNamespace is required when app.tls.servingCertificateSecretName is set: without it istio-csr would resolve a blank-namespace Secret lookup and CrashLoop after install rather than failing here." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -129,10 +129,11 @@ func NewCommand(ctx context.Context) *cobra.Command {
 			}
 
 			// Create a new TLS provider for the serving certificate and private key.
-			tls, err := tls.NewProvider(opts.Logr, cm, opts.TLS, cm, cl)
+			tls, err := tls.NewProvider(opts.Logr, cm, opts.TLS, cm)
 			if err != nil {
 				return fmt.Errorf("failed to create tls provider: %w", err)
 			}
+			tls.UseServingCertificateSecret(cl)
 
 			// Helper to only call health checks once issuer config is available
 			deferCheckUntilIssuerConfig := func(check healthz.Checker) healthz.Checker {

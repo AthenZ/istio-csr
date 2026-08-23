@@ -61,6 +61,7 @@ func TestProvider_loadFromSecret(t *testing.T) {
 		// Secret must not be required.
 		rootCAsCertFile string
 		preloadRootCAs  []byte
+		dnsNames        []string
 		expErr          bool
 		expErrContains  string
 		expNotAfter     time.Time
@@ -111,6 +112,27 @@ func TestProvider_loadFromSecret(t *testing.T) {
 			// be the roots that signed the serving certificate.
 			preloadRootCAs: caPEM,
 			expNotAfter:    servingNotAfter,
+		},
+		"a certificate covering the configured DNS name is accepted": {
+			secret: newSecret(map[string][]byte{
+				"tls.crt": servingCertPEM,
+				"tls.key": servingKeyPEM,
+				"ca.crt":  caPEM,
+			}),
+			dnsNames:    []string{"istio-csr.cert-manager.svc"},
+			expNotAfter: servingNotAfter,
+		},
+		"a certificate not covering the configured DNS name is rejected": {
+			secret: newSecret(map[string][]byte{
+				"tls.crt": servingCertPEM,
+				"tls.key": servingKeyPEM,
+				"ca.crt":  caPEM,
+			}),
+			// Chains fine and is inside its validity window -- only the hostname
+			// is wrong, which clients would otherwise discover at handshake time.
+			dnsNames:       []string{"istio-csr.other-namespace.svc"},
+			expErr:         true,
+			expErrContains: "not valid for configured DNS name",
 		},
 		"a serving certificate that does not chain to the mesh roots is rejected": {
 			secret: newSecret(map[string][]byte{
@@ -176,7 +198,7 @@ func TestProvider_loadFromSecret(t *testing.T) {
 			if test.secret != nil {
 				objects = append(objects, test.secret)
 			}
-			client := k8sfake.NewSimpleClientset(objects...)
+			client := k8sfake.NewClientset(objects...)
 
 			p := &Provider{
 				log:       logger,
@@ -184,6 +206,7 @@ func TestProvider_loadFromSecret(t *testing.T) {
 				opts: Options{
 					TrustDomain:                       testTrustDomain,
 					RootCAsCertFile:                   test.rootCAsCertFile,
+					ServingCertificateDNSNames:        test.dnsNames,
 					ServingCertificateSecretName:      testSecretName,
 					ServingCertificateSecretNamespace: testSecretNamespace,
 				},
@@ -308,7 +331,7 @@ func TestProvider_loadFromSecret_failedRefreshDoesNotPublishCA(t *testing.T) {
 	require.NotEqual(t, caPEM, newCAPEM)
 
 	good := newSecret(map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM, "ca.crt": caPEM})
-	client := k8sfake.NewSimpleClientset(good)
+	client := k8sfake.NewClientset(good)
 
 	p := &Provider{
 		log:       logger,
@@ -366,7 +389,7 @@ func TestProvider_loadFromSecret_unchainedCARotationIsNotPublished(t *testing.T)
 	require.NotEqual(t, caPEM, newCAPEM)
 
 	good := newSecret(map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM, "ca.crt": caPEM})
-	client := k8sfake.NewSimpleClientset(good)
+	client := k8sfake.NewClientset(good)
 
 	p := &Provider{
 		log:       logger,

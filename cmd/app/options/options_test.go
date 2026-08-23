@@ -17,6 +17,7 @@ limitations under the License.
 package options
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,30 @@ import (
 	"github.com/cert-manager/istio-csr/pkg/tls"
 )
 
-func Test_validateServingCertificateOptions(t *testing.T) {
+// completeServingCertificateChecks mirrors, in order, the two serving-certificate
+// checks Complete performs. Complete itself cannot be driven from a table test:
+// it calls klog.InitFlags(nil), which panics on a second invocation.
+//
+// The DNS-name check is deliberately left inline in Complete rather than extracted,
+// so that the upstream statement stays in place and only its condition is amended.
+// That keeps the fork's diff additive; the cost is that the sequencing below is a
+// mirror rather than the real call path.
+func completeServingCertificateChecks(o tls.Options) error {
+	if len(o.ServingCertificateDNSNames) == 0 && !servingCertificateFromSecret(o) {
+		return fmt.Errorf("the list of DNS names to add to the serving certificate is empty")
+	}
+
+	return validateServingCertificateSecretOptions(o)
+}
+
+func Test_servingCertificateFromSecret(t *testing.T) {
+	require.False(t, servingCertificateFromSecret(tls.Options{}),
+		"no Secret name means the CertificateRequest path")
+	require.True(t, servingCertificateFromSecret(tls.Options{ServingCertificateSecretName: "s"}),
+		"a Secret name selects the pre-provisioned Secret path")
+}
+
+func Test_servingCertificateValidation(t *testing.T) {
 	tests := map[string]struct {
 		opts           tls.Options
 		expErr         bool
@@ -79,7 +103,7 @@ func Test_validateServingCertificateOptions(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			err := validateServingCertificateOptions(test.opts)
+			err := completeServingCertificateChecks(test.opts)
 
 			if test.expErr {
 				require.Error(t, err)

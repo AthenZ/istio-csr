@@ -133,7 +133,13 @@ func (o *Options) Complete() error {
 		return fmt.Errorf("failed to configure istio logging: %w", err)
 	}
 
-	if err := validateServingCertificateOptions(o.TLS); err != nil {
+	// Ensure there is at least one DNS name to set in the serving certificate
+	// to ensure clients can properly verify the serving certificate
+	if len(o.TLS.ServingCertificateDNSNames) == 0 && !servingCertificateFromSecret(o.TLS) {
+		return fmt.Errorf("the list of DNS names to add to the serving certificate is empty")
+	}
+
+	if err := validateServingCertificateSecretOptions(o.TLS); err != nil {
 		return err
 	}
 
@@ -228,17 +234,20 @@ func (o *Options) addAppFlags(fs *pflag.FlagSet) {
 		"Port to expose Prometheus metrics on 0.0.0.0 on path '/metrics'.")
 }
 
-// validateServingCertificateOptions checks the serving-certificate options are
-// internally consistent. Split out of Complete so it can be tested without
-// Complete's global side effects (klog flag registration, kubeconfig loading).
-func validateServingCertificateOptions(o tls.Options) error {
-	// Ensure there is at least one DNS name to set in the serving certificate
-	// so clients can properly verify it. Not required when loading a
-	// pre-provisioned Secret, whose certificate already embeds its own SANs.
-	if len(o.ServingCertificateDNSNames) == 0 && o.ServingCertificateSecretName == "" {
-		return fmt.Errorf("the list of DNS names to add to the serving certificate is empty")
-	}
+// servingCertificateFromSecret reports whether the serving certificate is loaded
+// from a pre-provisioned Secret rather than issued via a CertificateRequest.
+//
+// In that mode the DNS SANs are embedded in the certificate that already exists,
+// so requiring --serving-certificate-dns-names would force dead configuration.
+func servingCertificateFromSecret(o tls.Options) bool {
+	return o.ServingCertificateSecretName != ""
+}
 
+// validateServingCertificateSecretOptions checks the pre-provisioned Secret
+// options are internally consistent. A standalone function rather than inline in
+// Complete so it is testable: Complete calls klog.InitFlags(nil), which panics on
+// a second invocation and so cannot be driven from a table test.
+func validateServingCertificateSecretOptions(o tls.Options) error {
 	// A Secret name without a namespace would resolve to a blank-namespace Get,
 	// failing obscurely on first fetch rather than at startup.
 	if o.ServingCertificateSecretName != "" && o.ServingCertificateSecretNamespace == "" {

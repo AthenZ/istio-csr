@@ -128,7 +128,10 @@ type Provider struct {
 
 	rootCAs rootca.RootCAs
 
-	cm        certmanager.Signer
+	cm certmanager.Signer
+
+	// k8sClient reads the pre-provisioned serving certificate Secret when
+	// ServingCertificateSecretName is set. Nil otherwise.
 	k8sClient kubernetes.Interface
 
 	lock          sync.RWMutex
@@ -139,15 +142,41 @@ type Provider struct {
 }
 
 // NewProvider will return a new provider where a TLS config is ready to be fetched.
-func NewProvider(log logr.Logger, cm certmanager.Signer, opts Options, issuerChangeNotifier certmanager.IssuerChangeNotifier, k8sClient kubernetes.Interface) (*Provider, error) {
+func NewProvider(log logr.Logger, cm certmanager.Signer, opts Options, issuerChangeNotifier certmanager.IssuerChangeNotifier) (*Provider, error) {
 	return &Provider{
-		opts:      opts,
-		log:       log.WithName("tls-provider"),
-		cm:        cm,
-		k8sClient: k8sClient,
+		opts: opts,
+		log:  log.WithName("tls-provider"),
+		cm:   cm,
 
 		issuerChangeNotifier: issuerChangeNotifier,
 	}, nil
+}
+
+// UseServingCertificateSecret supplies the Kubernetes client used to read the
+// pre-provisioned serving certificate Secret named by
+// Options.ServingCertificateSecretName. Must be called before Start.
+//
+// This is a separate configurator rather than a NewProvider parameter so that
+// NewProvider stays identical to upstream: the fork then carries this feature
+// as additions, and an upstream change to NewProvider's signature rebases
+// cleanly instead of conflicting.
+func (p *Provider) UseServingCertificateSecret(k8sClient kubernetes.Interface) {
+	p.k8sClient = k8sClient
+
+	if p.opts.ServingCertificateSecretName == "" {
+		return
+	}
+
+	// These only shape a CSR this provider will never generate. Saying so once at
+	// startup is cheaper than an operator wondering why --serving-certificate-duration
+	// has no bearing on the certificate actually being served.
+	p.log.Info("loading the serving certificate from a Secret; the certificate's own properties apply",
+		"secret", p.opts.ServingCertificateSecretNamespace+"/"+p.opts.ServingCertificateSecretName,
+		"ignored-flags", []string{
+			"--serving-certificate-duration",
+			"--serving-certificate-key-size",
+			"--serving-signature-algorithm",
+		})
 }
 
 // Start will start the TLS provider. This will fetch a serving certificate and
@@ -469,6 +498,30 @@ func (p *Provider) fetchCertificate(ctx context.Context) (time.Time, error) {
 	return leafCert.NotAfter, nil
 }
 
+// verifyServingCertificateDNSNames checks the certificate is valid for every DNS
+// name the operator asked clients to reach istio-csr by.
+//
+// The chain verification proves the certificate is trusted; this proves it is the
+// right certificate. Secret mode relaxes the --serving-certificate-dns-names
+// requirement because the pre-provisioned certificate carries its own SANs, which
+// leaves a gap: a certificate with the correct URI SAN but the wrong DNS SAN
+// chains fine, the provider goes ready, and clients then fail the handshake on
+// hostname mismatch -- the same opaque far-end failure the chain check exists to
+// prevent.
+//
+// When no DNS names are configured there is nothing to check against, and the
+// caller logs the certificate's SANs instead.
+func verifyServingCertificateDNSNames(leaf *x509.Certificate, dnsNames []string) error {
+	for _, dnsName := range dnsNames {
+		if err := leaf.VerifyHostname(dnsName); err != nil {
+			return fmt.Errorf("serving certificate is not valid for configured DNS name %q (certificate has %q): %w",
+				dnsName, leaf.DNSNames, err)
+		}
+	}
+
+	return nil
+}
+
 // loadFromSecret loads the serving certificate and private key from the
 // pre-provisioned Kubernetes Secret named by opts.ServingCertificateSecretName.
 // It builds a tls.Config identical to the one produced by fetchCertificate.
@@ -610,6 +663,19 @@ func (p *Provider) loadFromSecret(ctx context.Context) (time.Time, error) {
 	}); err != nil {
 		return time.Time{}, fmt.Errorf("failed to verify serving certificate in Secret %s/%s against the current mesh roots: %w",
 			p.opts.ServingCertificateSecretNamespace, p.opts.ServingCertificateSecretName, err)
+	}
+
+	if err := verifyServingCertificateDNSNames(servingChain[0], p.opts.ServingCertificateDNSNames); err != nil {
+		return time.Time{}, fmt.Errorf("serving certificate in Secret %s/%s is unusable: %w",
+			p.opts.ServingCertificateSecretNamespace, p.opts.ServingCertificateSecretName, err)
+	}
+
+	if len(p.opts.ServingCertificateDNSNames) == 0 {
+		// Nothing to verify the certificate against, so surface what it actually
+		// covers. A hostname mismatch would otherwise only appear as a handshake
+		// failure inside a client.
+		p.log.Info("no serving certificate DNS names configured; serving the Secret's certificate as-is",
+			"dns-names", leafCert.DNSNames, "uris", leafCert.URIs)
 	}
 
 	// Everything is validated. Only now publish the CA, then the serving
