@@ -1,3 +1,6 @@
+{{- if and .Values.app.tls.servingCertificateSecretName (not .Values.app.tls.servingCertificateSecretNamespace) }}
+{{- fail "app.tls.servingCertificateSecretNamespace is required when app.tls.servingCertificateSecretName is set: without it istio-csr would resolve a blank-namespace Secret lookup and CrashLoop after install rather than failing here." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -98,6 +101,10 @@ spec:
           - "--serving-certificate-dns-names={{ . }}"
         {{- end  }}
           - "--serving-certificate-duration={{.Values.app.tls.certificateDuration}}"
+        {{- if .Values.app.tls.servingCertificateSecretName }}
+          - "--serving-certificate-secret-name={{.Values.app.tls.servingCertificateSecretName}}"
+          - "--serving-certificate-secret-namespace={{.Values.app.tls.servingCertificateSecretNamespace}}"
+        {{- end }}
           - "--trust-domain={{.Values.app.tls.trustDomain}}"
 
           # server

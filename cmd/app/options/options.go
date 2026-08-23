@@ -135,8 +135,12 @@ func (o *Options) Complete() error {
 
 	// Ensure there is at least one DNS name to set in the serving certificate
 	// to ensure clients can properly verify the serving certificate
-	if len(o.TLS.ServingCertificateDNSNames) == 0 {
+	if len(o.TLS.ServingCertificateDNSNames) == 0 && !servingCertificateFromSecret(o.TLS) {
 		return fmt.Errorf("the list of DNS names to add to the serving certificate is empty")
+	}
+
+	if err := validateServingCertificateSecretOptions(o.TLS); err != nil {
+		return err
 	}
 
 	o.RestConfig, err = o.kubeConfigFlags.ToRESTConfig()
@@ -230,6 +234,29 @@ func (o *Options) addAppFlags(fs *pflag.FlagSet) {
 		"Port to expose Prometheus metrics on 0.0.0.0 on path '/metrics'.")
 }
 
+// servingCertificateFromSecret reports whether the serving certificate is loaded
+// from a pre-provisioned Secret rather than issued via a CertificateRequest.
+//
+// In that mode the DNS SANs are embedded in the certificate that already exists,
+// so requiring --serving-certificate-dns-names would force dead configuration.
+func servingCertificateFromSecret(o tls.Options) bool {
+	return o.ServingCertificateSecretName != ""
+}
+
+// validateServingCertificateSecretOptions checks the pre-provisioned Secret
+// options are internally consistent. A standalone function rather than inline in
+// Complete so it is testable: Complete calls klog.InitFlags(nil), which panics on
+// a second invocation and so cannot be driven from a table test.
+func validateServingCertificateSecretOptions(o tls.Options) error {
+	// A Secret name without a namespace would resolve to a blank-namespace Get,
+	// failing obscurely on first fetch rather than at startup.
+	if o.ServingCertificateSecretName != "" && o.ServingCertificateSecretNamespace == "" {
+		return fmt.Errorf("--serving-certificate-secret-namespace must be set when --serving-certificate-secret-name is set")
+	}
+
+	return nil
+}
+
 func (o *Options) addTLSFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.TLS.TrustDomain,
 		"trust-domain", "cluster.local",
@@ -261,6 +288,18 @@ func (o *Options) addTLSFlags(fs *pflag.FlagSet) {
 		"serving-signature-algorithm", "RSA",
 		"The type of signature algorithm to use when generating private keys. "+
 			"Currently only RSA and ECDSA are supported. By default RSA is used.")
+
+	fs.StringVar(&o.TLS.ServingCertificateSecretName,
+		"serving-certificate-secret-name", "",
+		"Name of a pre-provisioned Secret containing a cert-manager-issued TLS certificate "+
+			"and key for the gRPC serving endpoint. When set, istio-csr loads its serving cert "+
+			"from this Secret (tls.crt, tls.key, ca.crt) instead of requesting a CertificateRequest. "+
+			"Use this to supply a SPIFFE URI SAN that cert-manager Certificates support but "+
+			"the built-in CertificateRequest path does not.")
+
+	fs.StringVar(&o.TLS.ServingCertificateSecretNamespace,
+		"serving-certificate-secret-namespace", "",
+		"Namespace of the Secret named by --serving-certificate-secret-name.")
 }
 
 func (o *Options) addCertManagerFlags(fs *pflag.FlagSet) {
