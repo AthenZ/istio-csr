@@ -6,6 +6,9 @@ on:
 
 env:
   VERSION: ${{ github.ref_name }}
+  # Fork releases publish to docker.io/athenz rather than quay.io/jetstack.
+  # Both the image and the Helm chart go there; `make release` pushes both.
+  REGISTRY_URL: docker.io
 
 jobs:
   build_and_push:
@@ -25,9 +28,9 @@ jobs:
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
+          registry: ${{ env.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

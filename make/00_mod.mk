@@ -23,23 +23,56 @@ go_manager_main_dir := ./cmd
 go_manager_mod_dir := .
 go_manager_ldflags := -X $(repo_name)/internal/version.AppVersion=$(VERSION) -X $(repo_name)/internal/version.GitCommit=$(GITCOMMIT)
 oci_manager_base_image_flavor := static
-oci_manager_image_name := quay.io/jetstack/cert-manager-istio-csr
+# Image and chart are SEPARATE Docker Hub repositories sharing a version tag.
+# Docker Hub has no nested repositories, so the chart cannot live under a
+# "charts/" path and must be flat in the namespace -- which means it would
+# collide with the image if both used the same name. The siblings solve this the
+# same way: athenz-cert-manager-issuer (image) vs athenz-issuer (chart),
+# athenz-csi-driver (image) vs csi-driver-athenz (chart).
+oci_manager_image_name := docker.io/athenz/athenz-istio-csr
 oci_manager_image_tag := $(VERSION)
-oci_manager_image_name_development := cert-manager.local/cert-manager-istio-csr
-oci_platforms := linux/amd64,linux/arm/v7,linux/arm64,linux/ppc64le,linux/s390x
+oci_manager_image_name_development := athenz.local/athenz-istio-csr
+oci_platforms := linux/amd64,linux/arm64
 
 deploy_name := istio-csr
 deploy_namespace := cert-manager
 
 helm_chart_source_dir := deploy/charts/istio-csr
-helm_chart_image_name := quay.io/jetstack/charts/cert-manager-istio-csr
+# No "charts/" segment: Docker Hub does not support nested repositories, and
+# helm.mk derives the push destination as $(dir $(helm_chart_image_name)). This
+# publishes the chart flat at docker.io/athenz/cert-manager-istio-csr, which is
+# where the kdnc and fleks addons pull from via
+# oci://docker.ouroath.com:4443/docker.io/athenz.
+# $(notdir ...) must equal Chart.yaml's name; helm.mk asserts it.
+helm_chart_image_name := docker.io/athenz/cert-manager-istio-csr
 helm_chart_version := $(VERSION)
 helm_labels_template_name := cert-manager-istio-csr.labels
 
 golangci_lint_config := .golangci.yaml
 
+# docker.io/athenz/cert-manager-istio-csr -> "docker.io" and "athenz".
+# Derived rather than hardcoded so they cannot drift from oci_manager_image_name.
+oci_manager_image_registry := $(firstword $(subst /, ,$(oci_manager_image_name)))
+oci_manager_image_namespace := $(word 2,$(subst /, ,$(oci_manager_image_name)))
+# -> athenz-istio-csr. The chart defaults image.name to cert-manager-istio-csr,
+# which is the CHART's repository, so it must be overridden too.
+oci_manager_image_repository := $(word 3,$(subst /, ,$(oci_manager_image_name)))
+
+# Point the packaged chart at the fork's registry. Upstream ships
+# imageRegistry/imageNamespace defaulting to quay.io/jetstack, and this chart has
+# no mutation function, so without this a released chart would still pull the
+# upstream image.
+#
+# imageRegistry/imageNamespace are mutated rather than image.repository so the
+# chart keeps its upstream shape: image.repository stays empty and consumers can
+# still use either mechanism. The tag is left alone -- the image helper falls back
+# to .Chart.AppVersion, which is set to the release version at package time.
 define helm_values_mutation_function
-echo "no mutations defined for this chart"
+$(YQ) \
+	'( .imageRegistry = "$(oci_manager_image_registry)" ) | \
+	( .imageNamespace = "$(oci_manager_image_namespace)" ) | \
+	( .image.name = "$(oci_manager_image_repository)" )' \
+	$1 --inplace
 endef
 
 images_amd64 ?=
