@@ -8,7 +8,15 @@ env:
   VERSION: ${{ github.ref_name }}
   # Fork releases publish to docker.io/athenz rather than quay.io/jetstack.
   # Both the image and the Helm chart go there; `make release` pushes both.
+  #
+  # The account name is not a secret -- it is the public Docker Hub organization
+  # this project already publishes under. Only the token is. This matches the
+  # main Athenz repository, whose docker-build-publish.yaml likewise carries
+  # DOCKER_REGISTRY_USER=athenz in plain env and keeps only the token in
+  # secrets. Publishing as the organization account rather than a maintainer's
+  # personal account also means releases survive any one person leaving.
   REGISTRY_URL: docker.io
+  REGISTRY_USERNAME: athenz
 
 jobs:
   build_and_push:
@@ -29,7 +37,7 @@ jobs:
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY_URL }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
+          username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
